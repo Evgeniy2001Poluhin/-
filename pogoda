@@ -1,0 +1,258 @@
+from flask import Flask, render_template_string, redirect
+import requests
+from statistics import mean
+from datetime import datetime
+import json
+
+app = Flask(__name__)
+
+WEATHER_API_KEY = "63eaa9ce-4687-49bc-a761-2e62a030a501"
+BASE_URL = "https://api.weather.yandex.ru/v2/forecast"
+
+HTML_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Погода в Москве</title>
+    <style>
+        body {
+            font-family: 'Roboto', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #00b4db, #0083b0);
+            color: white;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .temp-current {
+            font-size: 72px;
+            font-weight: bold;
+            text-align: center;
+            margin: 20px 0;
+        }
+        .temp-avg {
+            font-size: 24px;
+            text-align: center;
+            margin: 10px 0;
+        }
+        .conditions {
+            text-align: center;
+            font-size: 18px;
+            margin: 10px 0;
+        }
+        .json-data {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 10px;
+            color: #333;
+        }
+        .json-data pre {
+            margin: 0;
+            white-space: pre-wrap;
+            font-family: 'Consolas', monospace;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .card h3 {
+            color: white;
+            margin-top: 0;
+            margin-bottom: 15px;
+            font-size: 20px;
+        }
+        .weather-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            text-align: center;
+        }
+        .weather-detail {
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+        }
+        .weather-detail-label {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        .weather-detail-value {
+            font-size: 18px;
+            font-weight: bold;
+            margin-top: 5px;
+        }
+        @media (max-width: 600px) {
+            body {
+                padding: 10px;
+            }
+            .temp-current {
+                font-size: 48px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="temp-current">{{current_temp}}°C</div>
+            <div class="weather-details">
+                <div class="weather-detail">
+                    <div class="weather-detail-label">Влажность</div>
+                    <div class="weather-detail-value">{{humidity}}%</div>
+                </div>
+                <div class="weather-detail">
+                    <div class="weather-detail-label">Ощущается как</div>
+                    <div class="weather-detail-value">{{feels_like}}°C</div>
+                </div>
+                <div class="weather-detail">
+                    <div class="weather-detail-label">Давление</div>
+                    <div class="weather-detail-value">{{pressure_mm}} мм рт.ст.</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="temp-avg">Средняя температура за {{days}} дней: {{avg_temp}}°C</div>
+        </div>
+        
+        <div class="card">
+            <h3>Подробная информация о погоде</h3>
+            <div class="weather-data">
+                <h4>Текущая погода</h4>
+                {% for line in formatted_data.current %}
+                    <p>{{ line }}</p>
+                {% endfor %}
+                
+                <h4>Прогноз на {{ days }} дней</h4>
+                {% for day in formatted_data.forecast %}
+                    <div class="forecast-day">
+                        {% for line in day %}
+                            <p>{{ line }}</p>
+                        {% endfor %}
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+'''
+
+def get_weather(lat=55.75, lon=37.62):
+    headers = {"X-Yandex-API-Key": WEATHER_API_KEY}
+    params = {
+        "lat": lat,
+        "lon": lon,
+        "lang": "ru_RU",
+        "limit": 7,
+        "hours": True,
+        "extra": True
+    }
+    response = requests.get(BASE_URL, headers=headers, params=params)
+    return response.json()
+
+def calculate_average_temp(weather_data):
+    temperatures = []
+    for forecast in weather_data['forecasts'][:5]:  # берем первые 5 дней
+        temperatures.append(forecast['parts']['day']['temp_avg'])
+    return round(mean(temperatures), 1)
+
+def format_weather_data(data):
+    """Форматирует данные погоды в читаемый вид"""
+    fact = data['fact']
+    forecasts = data['forecasts']
+    
+    # Словарь для перевода состояний погоды
+    conditions = {
+        "wet-snow": "Мокрый снег",
+        "overcast": "Пасмурно",
+        "partly-cloudy": "Переменная облачность",
+        "clear": "Ясно",
+        "cloudy": "Облачно",
+        "light-rain": "Небольшой дождь",
+        "rain": "Дождь",
+        "heavy-rain": "Сильный дождь",
+        "snow": "Снег",
+        "light-snow": "Небольшой снег",
+    }
+    
+    # Словарь для перевода направлений ветра
+    wind_directions = {
+        "nw": "северо-западный",
+        "n": "северный",
+        "ne": "северо-восточный",
+        "e": "восточный",
+        "se": "юго-восточный",
+        "s": "южный",
+        "sw": "юго-западный",
+        "w": "западный",
+    }
+
+    current = [
+        f"Температура: {fact['temp']}°C",
+        f"Ощущается как: {fact['feels_like']}°C",
+        f"Влажность: {fact['humidity']}%",
+        f"Давление: {fact['pressure_mm']} мм рт.ст.",
+        f"Ветер: {fact['wind_speed']} м/с, {wind_directions.get(fact['wind_dir'], fact['wind_dir'])}"
+    ]
+    
+    forecast = []
+    for f in forecasts[:5]:
+        day = f['parts']['day']
+        forecast.append([
+            f"Дата: {f['date']}",
+            f"Температура: {day['temp_avg']}°C",
+            f"Погода: {conditions.get(day['condition'], day['condition'])}",
+            f"Влажность: {day['humidity']}%",
+            f"Давление: {day['pressure_mm']} мм рт.ст."
+        ])
+    
+    return {
+        'current': current,
+        'forecast': forecast
+    }
+
+@app.route('/')
+def index():
+    return redirect('/weather/55.75/37.62')
+
+@app.route('/weather/<lat>/<lon>')
+@app.route('/weather/<lat>/<lon>/<int:days>')
+def weather(lat, lon, days=5):
+    try:
+        weather_data = get_weather(lat, lon)
+        avg_temp = calculate_average_temp(weather_data)
+        
+        # Форматируем данные для отображения
+        formatted_data = format_weather_data(weather_data)
+        
+        return render_template_string(
+            HTML_TEMPLATE,
+            current_temp=weather_data['fact']['temp'],
+            humidity=weather_data['fact']['humidity'],
+            feels_like=weather_data['fact']['feels_like'],
+            pressure_mm=weather_data['fact']['pressure_mm'],
+            avg_temp=avg_temp,
+            days=days,
+            formatted_data=formatted_data
+        )
+
+    except Exception as e:
+        return f'<h1>Ошибка</h1><p>{str(e)}</p>', 500
+
+if __name__ == '__main__':
+    print("Starting Weather Service...")
+    print(f"API Key: {WEATHER_API_KEY[:8]}...")
+    app.run(debug=True)
